@@ -12,7 +12,7 @@
 ```bash
 # In Colab:
 !pip install torch torchaudio accelerate datasets -q
-!git clone https://github.com/yourusername/prosody.git
+!git clone https://github.com/SidMan-alpha-version/prosody.01.git prosody
 %cd prosody
 !accelerate launch train_colab.py --use-streaming --languages en --epochs 5
 ```
@@ -80,7 +80,7 @@ from google.colab import drive
 drive.mount('/content/drive')
 
 !pip install torch torchaudio accelerate datasets -q
-!git clone https://github.com/yourusername/prosody.git
+!git clone https://github.com/SidMan-alpha-version/prosody.01.git prosody
 %cd prosody
 ```
 
