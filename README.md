@@ -19,16 +19,16 @@
 
 ## Train on Cloud Data (No Downloads!)
 
-```python
+```bash
 # English only - 20-30 min per epoch
-accelerate launch train_colab.py --use-streaming --languages en --epochs 5
+!accelerate launch train_colab.py --use-streaming --languages en --epochs 5
 
 # Multiple languages - mixed batches
-accelerate launch train_colab.py --use-streaming \
+!accelerate launch train_colab.py --use-streaming \
     --languages en,es,fr,de,it,pt --epochs 3
 
 # All 20 languages - ultimate multilingual (default)
-accelerate launch train_colab.py --use-streaming \
+!accelerate launch train_colab.py --use-streaming \
     --languages all \
     --epochs 2
 ```
