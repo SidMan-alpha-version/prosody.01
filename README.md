@@ -12,9 +12,9 @@
 ```bash
 # In Colab:
 !pip install torch torchaudio accelerate datasets -q
-!git clone https://github.com/SidMan-alpha-version/prosody.01.git prosody
-%cd prosody
-!accelerate launch train_colab.py --use-streaming --languages all --epochs 5
+!git clone https://github.com/SidMan-alpha-version/prosody.01.git /content/prosody
+%cd /content/prosody
+!accelerate launch train_colab.py --use-streaming --languages all --epochs 5 --hf-token YOUR_HF_TOKEN
 ```
 
 ## Train on Cloud Data (No Downloads!)
