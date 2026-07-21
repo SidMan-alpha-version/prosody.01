@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+
+# Project files
+models/
+checkpoints/
+outputs/
+outputs_*/
+*.pt
+*.bin
+*.ckpt
+*.pth
+
+# Data files
+*.tar.gz
+*.zip
+common_voice/
+datasets/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Cache
+.cache/
+
+# Logs
+*.log
