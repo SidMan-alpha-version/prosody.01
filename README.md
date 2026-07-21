@@ -14,7 +14,7 @@
 !pip install torch torchaudio accelerate datasets -q
 !git clone https://github.com/SidMan-alpha-version/prosody.01.git prosody
 %cd prosody
-!accelerate launch train_colab.py --use-streaming --languages en --epochs 5
+!accelerate launch train_colab.py --use-streaming --languages all --epochs 5
 ```
 
 ## Train on Cloud Data (No Downloads!)
@@ -27,9 +27,9 @@ accelerate launch train_colab.py --use-streaming --languages en --epochs 5
 accelerate launch train_colab.py --use-streaming \
     --languages en,es,fr,de,it,pt --epochs 3
 
-# All 20 languages - ultimate multilingual
+# All 20 languages - ultimate multilingual (default)
 accelerate launch train_colab.py --use-streaming \
-    --languages en,es,fr,de,it,pt,nl,sv,uk,el,ro,af,pl,ru,zh,hi,bn,ta,ml,ar \
+    --languages all \
     --epochs 2
 ```
 
