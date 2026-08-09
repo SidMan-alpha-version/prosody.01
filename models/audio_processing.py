@@ -44,6 +44,11 @@ class AudioProcessor(nn.Module):
         if audio_tensors.ndim == 1:
             audio_tensors = audio_tensors.unsqueeze(0)
 
+        # Move mel_spectrogram to match audio_tensors device
+        if hasattr(self.mel_spectrogram, "spectrogram") and hasattr(self.mel_spectrogram.spectrogram, "window"):
+            if self.mel_spectrogram.spectrogram.window is not None and audio_tensors.device != self.mel_spectrogram.spectrogram.window.device:
+                self.mel_spectrogram = self.mel_spectrogram.to(audio_tensors.device)
+
         # Compute mel spectrogram
         mel_spec = self.mel_spectrogram(audio_tensors)  # [B, n_mels, T_frames]
         log_mel = torch.log(torch.clamp(mel_spec, min=1e-5))
