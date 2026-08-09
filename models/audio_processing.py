@@ -84,3 +84,68 @@ class TextTokenizer:
             token_ids = token_ids.tolist()
         clean_ids = [max(0, (t - 1)) for t in token_ids if t > 0]
         return bytes(clean_ids).decode("utf-8", errors="ignore")
+
+    def ctc_decode(self, logits_or_log_probs) -> str:
+        """
+        Greedy CTC Decoding: Takes logits [T, V] or [1, T, V],
+        computes argmax over vocabulary dim, collapses adjacent repeated tokens,
+        and removes CTC blank token (0).
+        """
+        if isinstance(logits_or_log_probs, torch.Tensor):
+            if logits_or_log_probs.ndim == 3:
+                logits_or_log_probs = logits_or_log_probs[0]
+            argmax_tokens = torch.argmax(logits_or_log_probs, dim=-1).tolist()
+        else:
+            argmax_tokens = logits_or_log_probs
+
+        # Collapse repeats and filter out blank (0)
+        collapsed = []
+        prev = None
+        for t in argmax_tokens:
+            if t != prev:
+                if t != self.blank_id:
+                    collapsed.append(t)
+                prev = t
+
+        return self.decode(collapsed)
+
+
+def compute_levenshtein_distance(seq1, seq2):
+    """Compute Levenshtein edit distance between two sequences (words or characters)."""
+    m, n = len(seq1), len(seq2)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+
+    for i in range(m + 1):
+        dp[i][0] = i
+    for j in range(n + 1):
+        dp[0][j] = j
+
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if seq1[i - 1] == seq2[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1]
+            else:
+                dp[i][j] = 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+
+    return dp[m][n]
+
+
+def compute_wer(ref: str, hyp: str) -> float:
+    """Compute Word Error Rate (WER) between reference and hypothesis text."""
+    ref_words = ref.strip().split()
+    hyp_words = hyp.strip().split()
+    if not ref_words:
+        return 0.0 if not hyp_words else 1.0
+    dist = compute_levenshtein_distance(ref_words, hyp_words)
+    return float(dist) / len(ref_words)
+
+
+def compute_cer(ref: str, hyp: str) -> float:
+    """Compute Character Error Rate (CER) between reference and hypothesis text."""
+    ref_chars = list(ref.strip())
+    hyp_chars = list(hyp.strip())
+    if not ref_chars:
+        return 0.0 if not hyp_chars else 1.0
+    dist = compute_levenshtein_distance(ref_chars, hyp_chars)
+    return float(dist) / len(ref_chars)
+

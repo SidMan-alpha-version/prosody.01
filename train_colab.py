@@ -14,7 +14,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from model_configs import MODEL_REGISTRY
-from models import ProsodyConformer, AudioProcessor, TextTokenizer
+from models import ProsodyConformer, AudioProcessor, TextTokenizer, compute_wer, compute_cer
 
 # Check for required modules
 try:
@@ -34,7 +34,7 @@ def get_streaming_dataloader(languages, split='train', batch_size=4, max_samples
         print("❌ HuggingFace Datasets not found. Install with: pip install datasets")
         return None
     
-    print(f"\n📡 Streaming {len(languages)} languages from cloud...")
+    print(f"\n📡 Streaming {len(languages)} languages [{split}] from cloud...")
     datasets = []
     
     kwargs = {}
@@ -43,7 +43,7 @@ def get_streaming_dataloader(languages, split='train', batch_size=4, max_samples
         kwargs['token'] = token_to_use
 
     for lang in languages:
-        print(f"   Loading {lang}...", end=" ", flush=True)
+        print(f"   Loading {lang} ({split})...", end=" ", flush=True)
         ds = None
         
         # Try multiple open/gated speech datasets for maximum resilience
@@ -78,7 +78,7 @@ def get_streaming_dataloader(languages, split='train', batch_size=4, max_samples
             print("✗ (Failed to access gated dataset. Set HF_TOKEN or login with huggingface-cli)")
     
     if not datasets:
-        print("\n⚠️ No cloud datasets loaded. Using synthetic stream for validation/demonstration...")
+        print(f"\n⚠️ No cloud datasets loaded for [{split}]. Using synthetic stream for validation/demonstration...")
         class SyntheticDataset:
             def __iter__(self):
                 count = 0
@@ -106,6 +106,53 @@ def get_streaming_dataloader(languages, split='train', batch_size=4, max_samples
             yield batch
     
     return batch_iterator()
+
+
+def evaluate(model, val_loader, audio_processor, tokenizer, ctc_criterion, accelerator, max_eval_samples=20):
+    """Run validation pass and compute validation loss, WER, and CER."""
+    model.eval()
+    val_loss = 0.0
+    val_steps = 0
+    wers, cers = [], []
+
+    with torch.no_grad():
+        for batch in val_loader:
+            if not batch or len(batch['audio']) == 0:
+                continue
+
+            mel_features = audio_processor(batch['audio']).to(accelerator.device)
+            targets, target_lengths = tokenizer.encode_batch(batch['text'])
+            targets = targets.to(accelerator.device)
+            target_lengths = target_lengths.to(accelerator.device)
+
+            outputs = model(mel_features)
+            ctc_logits = outputs['ctc_logits']
+
+            T_frames = ctc_logits.shape[1]
+            B_size = ctc_logits.shape[0]
+            ctc_log_probs = ctc_logits.log_softmax(dim=-1).transpose(0, 1)
+            input_lengths = torch.full((B_size,), T_frames, dtype=torch.long, device=accelerator.device)
+
+            loss_ctc = ctc_criterion(ctc_log_probs, targets, input_lengths, target_lengths)
+            val_loss += loss_ctc.item()
+            val_steps += 1
+
+            for b in range(B_size):
+                ref_text = batch['text'][b]
+                hyp_text = tokenizer.ctc_decode(ctc_logits[b])
+                wers.append(compute_wer(ref_text, hyp_text))
+                cers.append(compute_cer(ref_text, hyp_text))
+
+            if val_steps * B_size >= max_eval_samples:
+                break
+
+    model.train()
+    avg_loss = val_loss / max(1, val_steps)
+    avg_wer = sum(wers) / max(1, len(wers))
+    avg_cer = sum(cers) / max(1, len(cers))
+
+    return {"val_loss": avg_loss, "val_wer": avg_wer, "val_cer": avg_cer}
+
 
 def main():
     parser = argparse.ArgumentParser(description="Train Prosody Conformer model on Colab")
@@ -144,11 +191,13 @@ def main():
         print(f"Languages ({len(languages)}): {', '.join(languages)}")
         print(f"Model params: {config['estimated_params']/1e6:.0f}M")
         print(f"Estimated memory: {config['estimated_memory_gb']:.1f}GB")
+        print(f"Gradient Checkpointing: {config.get('gradient_checkpointing', False)}")
         print(f"{'='*70}\n")
     
     # Load data
     if args.use_streaming:
         train_data = get_streaming_dataloader(languages, 'train', args.batch_size, args.max_samples, args.hf_token)
+        val_data = get_streaming_dataloader(languages, 'validation', args.batch_size, 20, args.hf_token)
         if train_data is None:
             print("❌ Failed to load streaming data")
             return
@@ -175,6 +224,7 @@ def main():
     # Training loop
     total_loss = 0
     step = 0
+    metrics_log = []
     
     for epoch in range(args.epochs):
         print(f"\nEpoch {epoch+1}/{args.epochs}")
@@ -224,11 +274,27 @@ def main():
                 print(f"❌ Error in training step: {e}")
                 continue
         
+        # Validation Evaluation
+        if val_data:
+            eval_results = evaluate(model, val_data, audio_processor, tokenizer, ctc_criterion, accelerator)
+            print(f"📊 Validation Epoch {epoch+1}: Val Loss = {eval_results['val_loss']:.4f} | WER = {eval_results['val_wer']:.4f} | CER = {eval_results['val_cer']:.4f}")
+            metrics_log.append({
+                "epoch": epoch + 1,
+                "train_loss": total_loss / max(1, step),
+                "val_loss": eval_results["val_loss"],
+                "val_wer": eval_results["val_wer"],
+                "val_cer": eval_results["val_cer"],
+            })
+
         # Save checkpoint
         accelerator.save_state(f"{args.output_dir}/epoch_{epoch+1}")
     
     if accelerator.is_main_process:
-        print(f"\n✅ Training complete! Model saved to {args.output_dir}")
+        metrics_file = f"{args.output_dir}/metrics_summary.json"
+        with open(metrics_file, "w") as f:
+            json.dump(metrics_log, f, indent=2)
+        print(f"\n📊 Metrics log saved to {metrics_file}")
+        print(f"✅ Training complete! Model saved to {args.output_dir}")
 
 if __name__ == "__main__":
     main()

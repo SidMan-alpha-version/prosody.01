@@ -118,8 +118,9 @@ class ConformerBlock(nn.Module):
 class ConformerEncoder(nn.Module):
     """Stacked Conformer Encoder with subsampling / input projection."""
 
-    def __init__(self, input_dim: int = 80, hidden_dim: int = 768, num_layers: int = 18, num_heads: int = 12, ffn_dim: int = 3072, conv_kernel_size: int = 31, dropout: float = 0.1):
+    def __init__(self, input_dim: int = 80, hidden_dim: int = 768, num_layers: int = 18, num_heads: int = 12, ffn_dim: int = 3072, conv_kernel_size: int = 31, dropout: float = 0.1, gradient_checkpointing: bool = False):
         super().__init__()
+        self.gradient_checkpointing = gradient_checkpointing
         self.input_projection = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -139,7 +140,10 @@ class ConformerEncoder(nn.Module):
         x = mel_features.transpose(1, 2)  # [B, T, n_mels]
         x = self.input_projection(x)       # [B, T, hidden_dim]
         for layer in self.layers:
-            x = layer(x)
+            if self.gradient_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(layer, x, use_reentrant=False)
+            else:
+                x = layer(x)
         return x
 
 
@@ -155,6 +159,7 @@ class ProsodyConformer(nn.Module):
         super().__init__()
         enc_cfg = config["encoder"]
         self.vocab_size = config.get("vocab_size", 256)
+        grad_chk = config.get("gradient_checkpointing", False)
 
         self.encoder = ConformerEncoder(
             input_dim=enc_cfg.get("input_dim", 80),
@@ -164,6 +169,7 @@ class ProsodyConformer(nn.Module):
             ffn_dim=enc_cfg.get("ffn_dim", 3072),
             conv_kernel_size=enc_cfg.get("conv_kernel_size", 31),
             dropout=enc_cfg.get("dropout", 0.1),
+            gradient_checkpointing=grad_chk,
         )
 
         hidden_dim = enc_cfg.get("hidden_dim", 768)
