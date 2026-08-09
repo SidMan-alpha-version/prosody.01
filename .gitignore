@@ -8,7 +8,8 @@ venv/
 ENV/
 
 # Project files
-models/
+saved_models/
+weights/
 checkpoints/
 outputs/
 outputs_*/

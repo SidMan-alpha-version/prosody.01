@@ -14,6 +14,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from model_configs import MODEL_REGISTRY
+from models import ProsodyConformer, AudioProcessor, TextTokenizer
 
 # Check for required modules
 try:
@@ -107,7 +108,7 @@ def get_streaming_dataloader(languages, split='train', batch_size=4, max_samples
     return batch_iterator()
 
 def main():
-    parser = argparse.ArgumentParser(description="Train Prosody model on Colab")
+    parser = argparse.ArgumentParser(description="Train Prosody Conformer model on Colab")
     parser.add_argument("--model-size", type=str, default="medium", choices=["small", "medium", "large"])
     parser.add_argument("--languages", type=str, default="all", help="Comma-separated languages or 'all' for 20 languages")
     parser.add_argument("--epochs", type=int, default=5)
@@ -122,7 +123,7 @@ def main():
     
     args = parser.parse_args()
     
-    # Setup
+    # Setup Accelerator
     mixed_precision = args.mixed_precision
     if mixed_precision == "auto":
         mixed_precision = "fp16" if torch.cuda.is_available() else "no"
@@ -138,7 +139,7 @@ def main():
     
     if accelerator.is_main_process:
         print(f"\n{'='*70}")
-        print(f"🚀 Prosody Training - {args.model_size.upper()} Model")
+        print(f"🚀 Prosody Training - {args.model_size.upper()} Conformer Model")
         print(f"{'='*70}")
         print(f"Languages ({len(languages)}): {', '.join(languages)}")
         print(f"Model params: {config['estimated_params']/1e6:.0f}M")
@@ -158,13 +159,13 @@ def main():
         print("❌ Local mode not implemented. Use --use-streaming")
         return
     
-    # Create model
-    model = nn.Sequential(
-        nn.Linear(80, 256),
-        nn.ReLU(),
-        nn.Linear(256, 256),
-        nn.Linear(256, config['vocab_size'])
-    )
+    # Instantiate Audio Processor & Tokenizer
+    audio_processor = AudioProcessor(sample_rate=16000, n_mels=config["encoder"]["input_dim"]).to(accelerator.device)
+    tokenizer = TextTokenizer(vocab_size=config["vocab_size"])
+    
+    # Create Prosody Conformer Model
+    model = ProsodyConformer(config)
+    ctc_criterion = nn.CTCLoss(blank=0, zero_infinity=True)
     
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
     scheduler = CosineAnnealingLR(optimizer, T_max=100)
@@ -184,9 +185,27 @@ def main():
                 if len(batch['audio']) == 0:
                     continue
                 
+                # Extract Log-Mel Spectrogram features
+                mel_features = audio_processor(batch['audio']).to(accelerator.device)  # [B, n_mels, T_frames]
+                
+                # Tokenize targets
+                targets, target_lengths = tokenizer.encode_batch(batch['text'])
+                targets = targets.to(accelerator.device)
+                target_lengths = target_lengths.to(accelerator.device)
+                
                 # Forward pass
-                logits = model(torch.randn(len(batch['audio']), 80))
-                loss = logits.mean()
+                outputs = model(mel_features)
+                ctc_logits = outputs['ctc_logits']  # [B, T_frames, vocab_size]
+                
+                # CTC Loss computation: [T_frames, B, vocab_size]
+                T_frames = ctc_logits.shape[1]
+                B_size = ctc_logits.shape[0]
+                ctc_log_probs = ctc_logits.log_softmax(dim=-1).transpose(0, 1)
+                input_lengths = torch.full((B_size,), T_frames, dtype=torch.long, device=accelerator.device)
+                
+                loss_ctc = ctc_criterion(ctc_log_probs, targets, input_lengths, target_lengths)
+                loss_prosody = outputs['f0_pred'].abs().mean() * 0.01 + outputs['energy_pred'].abs().mean() * 0.01
+                loss = loss_ctc + loss_prosody
                 
                 # Backward pass
                 accelerator.backward(loss)
@@ -202,7 +221,7 @@ def main():
                     pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
                     
             except Exception as e:
-                print(f"❌ Error: {e}")
+                print(f"❌ Error in training step: {e}")
                 continue
         
         # Save checkpoint
