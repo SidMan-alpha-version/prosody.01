@@ -31,8 +31,8 @@ def main():
     if "--epochs" not in args:
         args.extend(["--epochs", "3"])
 
-    # 3. Launch training
-    cmd = ["accelerate", "launch", "train_colab.py"] + args
+    # 3. Launch training with single process to prevent multi-worker dataset memory duplication
+    cmd = ["accelerate", "launch", "--num_processes", "1", "--mixed_precision", "fp16", "train_colab.py"] + args
     print(f"⚡ Running command: {' '.join(cmd)}\n")
     subprocess.run(cmd)
 
