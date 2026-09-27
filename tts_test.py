@@ -23,10 +23,12 @@ def synthesize_speech(checkpoint_path: str, text: str, output_wav: str = "genera
     config = MODEL_REGISTRY.get(model_size, MODEL_REGISTRY["small"])
     model = ProsodyConformer(config)
 
+    ckpt = None
     if checkpoint_path and os.path.exists(checkpoint_path):
-        state_dict = torch.load(checkpoint_path, map_location=device)
+        ckpt = torch.load(checkpoint_path, map_location=device)
+        state_dict = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
         model.load_state_dict(state_dict, strict=False)
-        print("✓ Model weights loaded successfully!")
+        print("✓ Conformer model weights loaded successfully!")
     else:
         print("⚠️ Checkpoint file not found, using initialized weights.")
 
@@ -40,12 +42,10 @@ def synthesize_speech(checkpoint_path: str, text: str, output_wav: str = "genera
     print(f"🎤 Synthesizing speech for input text: '{text}'")
 
     with torch.no_grad():
-        # Encode text bytes into harmonic formant spectrum
         bytes_data = text.encode("utf-8")
         frames_per_char = 8
         total_frames = max(64, len(bytes_data) * frames_per_char)
 
-        # Build structured harmonic mel-spectrogram base from text bytes
         mel_base = torch.zeros(1, config["encoder"]["input_dim"], total_frames, device=device)
         for i, b in enumerate(bytes_data):
             formant_bin = (b % 45) + 15
@@ -55,17 +55,14 @@ def synthesize_speech(checkpoint_path: str, text: str, output_wav: str = "genera
             if formant_bin + 5 < 80:
                 mel_base[0, formant_bin + 5, start_f:end_f] = 1.8
 
-        # Pass harmonic mel representation through Conformer model to predict prosody contours
         outputs = model(mel_base)
         encoder_out = outputs["encoder_out"]  # [1, T_subsampled, hidden_dim]
         f0_pred = outputs["f0_pred"]          # [1, T_subsampled] Pitch contour (Swaras)
         energy_pred = outputs["energy_pred"]  # [1, T_subsampled] Dynamic intensity
 
-        # Interpolate predicted F0 pitch contour to match frame length
         f0_expanded = torch.nn.functional.interpolate(f0_pred.unsqueeze(1), size=total_frames, mode="linear", align_corners=False)
         energy_expanded = torch.nn.functional.interpolate(energy_pred.unsqueeze(1), size=total_frames, mode="linear", align_corners=False)
 
-        # Modulate spectral harmonics with pitch (F0) and energy predictions
         modulated_mel = torch.clamp(mel_base + 0.1 * f0_expanded + 0.05 * energy_expanded, min=-5.0, max=5.0)
 
         # Synthesize audio waveform using HiFi-GAN Neural Vocoder or Griffin-Lim
@@ -73,7 +70,10 @@ def synthesize_speech(checkpoint_path: str, text: str, output_wav: str = "genera
             try:
                 print("✨ Synthesizing voice via SpeechT5 HiFi-GAN Neural Vocoder (Human Vocal Acoustics)...")
                 vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan").to(device)
-                # SpeechT5HifiGan expects normalized log-mel input tensor [1, T, 80]
+                if isinstance(ckpt, dict) and "hifigan_state" in ckpt:
+                    print("📦 Loaded HiFi-GAN vocoder weights directly from model checkpoint!")
+                    vocoder.load_state_dict(ckpt["hifigan_state"])
+
                 mel_input = modulated_mel.transpose(1, 2)  # [1, T, 80]
                 wav_out = vocoder(mel_input)
                 waveform = wav_out.cpu()

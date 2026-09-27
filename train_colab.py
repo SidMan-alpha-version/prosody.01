@@ -302,7 +302,8 @@ def main():
     if args.checkpoint and os.path.exists(args.checkpoint):
         if accelerator.is_main_process:
             print(f"📦 Loading pre-trained checkpoint weights from {args.checkpoint}...")
-        state_dict = torch.load(args.checkpoint, map_location=accelerator.device)
+        ckpt = torch.load(args.checkpoint, map_location=accelerator.device)
+        state_dict = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
         model.load_state_dict(state_dict, strict=False)
     ctc_criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 
@@ -395,14 +396,30 @@ def main():
         if accelerator.is_main_process:
             unwrapped_model = accelerator.unwrap_model(model)
             latest_path = Path(args.output_dir) / "model_latest.pt"
-            torch.save(unwrapped_model.state_dict(), latest_path)
+
+            checkpoint_payload = {
+                "model_state": unwrapped_model.state_dict(),
+                "config": config,
+                "vocab_size": config.get("vocab_size", 256),
+            }
+
+            # Optionally bundle HiFi-GAN weights for 100% self-contained model deployment
+            try:
+                from transformers import SpeechT5HifiGan
+                hifigan_vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan")
+                checkpoint_payload["hifigan_state"] = hifigan_vocoder.state_dict()
+                print("✨ Bundled SpeechT5 HiFi-GAN Vocoder weights into checkpoint payload!")
+            except Exception:
+                pass
+
+            torch.save(checkpoint_payload, latest_path)
             print(f"💾 Saved checkpoint to {latest_path}")
 
             if eval_results and eval_results["val_loss"] < best_val_loss:
                 best_val_loss = eval_results["val_loss"]
                 best_path = Path(args.output_dir) / "model_best.pt"
-                torch.save(unwrapped_model.state_dict(), best_path)
-                print(f"🌟 New best model saved to {best_path}")
+                torch.save(checkpoint_payload, best_path)
+                print(f"🌟 New best unified model saved to {best_path}")
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
