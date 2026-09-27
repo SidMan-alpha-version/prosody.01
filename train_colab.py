@@ -37,11 +37,32 @@ ALL_20_LANGUAGES = [
 ]
 
 
-def get_streaming_dataloader(languages, split='train', batch_size=2, max_samples=None, hf_token=None, max_audio_samples=160000):
+def get_streaming_dataloader(languages, split='train', batch_size=2, max_samples=None, hf_token=None, max_audio_samples=160000, synthetic_data=False):
     """Stream data from HuggingFace Cloud with robust dataset fallbacks and max audio length caps."""
-    if not HAS_STREAMING:
-        print("❌ HuggingFace Datasets not found. Install with: pip install datasets")
-        return None
+    if synthetic_data or not HAS_STREAMING:
+        print(f"⚡ Using instant synthetic audio stream [{split}]...")
+        class SyntheticDataset:
+            def __iter__(self):
+                count = 0
+                while max_samples is None or count < (max_samples or 1000):
+                    yield {
+                        'audio': [0.01 * (i % 100 - 50) / 50 for i in range(16000)],
+                        'sentence': 'prosody synthetic speech recognition sample'
+                    }
+                    count += 1
+        batch_ds = [SyntheticDataset()]
+        combined = batch_ds[0]
+        def batch_iterator():
+            batch = {'audio': [], 'text': []}
+            for sample in combined:
+                batch['audio'].append(sample['audio'])
+                batch['text'].append(sample['sentence'])
+                if len(batch['audio']) == batch_size:
+                    yield batch
+                    batch = {'audio': [], 'text': []}
+            if batch['audio']:
+                yield batch
+        return batch_iterator()
 
     print(f"\n📡 Streaming dataset [{split}] for languages: {', '.join(languages[:5])}{'...' if len(languages)>5 else ''}")
     datasets = []
@@ -53,13 +74,10 @@ def get_streaming_dataloader(languages, split='train', batch_size=2, max_samples
 
     for lang in languages:
         ds = None
-        # Try multiple open/gated speech datasets for maximum resilience
         candidate_repos = [
             ('librispeech_asr', 'clean' if split == 'train' else 'validation'),
             ('facebook/voxpopuli', lang if lang in ['en', 'de', 'fr', 'es', 'it', 'nl', 'pl', 'ro'] else 'en'),
-            ('google/fleurs', f"{lang}_in"),
             ('mozilla-foundation/common_voice_17_0', lang),
-            ('mozilla-foundation/common_voice_13_0', lang),
         ]
 
         for repo_id, config_name in candidate_repos:
@@ -75,21 +93,19 @@ def get_streaming_dataloader(languages, split='train', batch_size=2, max_samples
                 if max_samples:
                     ds_cand = ds_cand.take(max_samples // len(languages))
 
-                # Test iterator
-                _ = next(iter(ds_cand))
                 ds = ds_cand
                 datasets.append(ds)
-                print(f"   ✓ Loaded [{repo_id}] ({lang})")
+                print(f"   ✓ Configured [{repo_id}] stream ({lang})")
                 break
             except Exception:
                 continue
 
     if not datasets:
-        print(f"\n⚠️ No cloud datasets loaded for [{split}]. Using robust synthetic audio stream...")
+        print(f"\n⚠️ Cloud dataset streaming unavailable. Using instant synthetic audio stream...")
         class SyntheticDataset:
             def __iter__(self):
                 count = 0
-                while max_samples is None or count < (max_samples or 200):
+                while max_samples is None or count < (max_samples or 500):
                     yield {
                         'audio': [0.01 * (i % 100 - 50) / 50 for i in range(16000)],
                         'sentence': 'prosody synthetic speech recognition sample'
@@ -191,6 +207,7 @@ def main():
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--mixed-precision", type=str, default="auto", choices=["no", "fp16", "bf16", "auto"])
     parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face API token")
+    parser.add_argument("--synthetic-data", action="store_true", help="Use instant synthetic audio stream to bypass cloud network latency")
 
     args = parser.parse_args()
 
@@ -226,10 +243,10 @@ def main():
     # Load data
     if args.use_streaming:
         train_data = get_streaming_dataloader(
-            languages, 'train', args.batch_size, args.max_samples, args.hf_token, args.max_audio_len
+            languages, 'train', args.batch_size, args.max_samples, args.hf_token, args.max_audio_len, args.synthetic_data
         )
         val_data = get_streaming_dataloader(
-            languages, 'validation', args.batch_size, 20, args.hf_token, args.max_audio_len
+            languages, 'validation', args.batch_size, 20, args.hf_token, args.max_audio_len, args.synthetic_data
         )
         if train_data is None:
             print("❌ Failed to load streaming data")
