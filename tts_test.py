@@ -71,16 +71,17 @@ def synthesize_speech(checkpoint_path: str, text: str, output_wav: str = "genera
         # Synthesize audio waveform using HiFi-GAN Neural Vocoder or Griffin-Lim
         if use_hifigan and HAS_HIFIGAN:
             try:
-                print("✨ Synthesizing voice via HiFi-GAN Neural Vocoder (Human Acoustics)...")
+                print("✨ Synthesizing voice via SpeechT5 HiFi-GAN Neural Vocoder (Human Vocal Acoustics)...")
                 vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan").to(device)
-                # HiFi-GAN expects mel tensor [1, T, 80]
-                wav_out = vocoder(modulated_mel.transpose(1, 2))
+                # SpeechT5HifiGan expects normalized log-mel input tensor [1, T, 80]
+                mel_input = modulated_mel.transpose(1, 2)  # [1, T, 80]
+                wav_out = vocoder(mel_input)
                 waveform = wav_out.cpu()
                 if waveform.ndim == 1:
                     waveform = waveform.unsqueeze(0)
                 sample_rate = 16000
             except Exception as e:
-                print(f"⚠️ HiFi-GAN fallback to Griffin-Lim ({e})")
+                print(f"⚠️ HiFi-GAN fallback ({e}). Using Griffin-Lim...")
                 inv_mel = torchaudio.transforms.InverseMelScale(n_stft=513, n_mels=config["encoder"]["input_dim"], sample_rate=16000).to(device)
                 griffin_lim = torchaudio.transforms.GriffinLim(n_fft=1024, hop_length=256).to(device)
                 spectrogram = inv_mel(torch.exp(modulated_mel))
