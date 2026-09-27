@@ -240,6 +240,7 @@ def main():
     parser.add_argument("--mixed-precision", type=str, default="auto", choices=["no", "fp16", "bf16", "auto"])
     parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face API token")
     parser.add_argument("--synthetic-data", action="store_true", help="Use instant synthetic audio stream to bypass cloud network latency")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint weights file to resume training from")
 
     args = parser.parse_args()
 
@@ -270,6 +271,8 @@ def main():
         print(f"Subsampling factor  : {config.get('subsampling_factor', 4)}x (Time Downsampling Enabled)")
         print(f"Gradient Accum.     : {args.gradient_accumulation_steps} steps (Effective batch size: {args.batch_size * args.gradient_accumulation_steps})")
         print(f"Mixed Precision     : {mixed_precision}")
+        if args.checkpoint:
+            print(f"Resume Checkpoint   : {args.checkpoint}")
         print(f"{'='*70}\n")
 
     # Load data
@@ -296,6 +299,11 @@ def main():
 
     # Create Prosody Conformer Model
     model = ProsodyConformer(config)
+    if args.checkpoint and os.path.exists(args.checkpoint):
+        if accelerator.is_main_process:
+            print(f"📦 Loading pre-trained checkpoint weights from {args.checkpoint}...")
+        state_dict = torch.load(args.checkpoint, map_location=accelerator.device)
+        model.load_state_dict(state_dict, strict=False)
     ctc_criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 
     optimizer = AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-2)
