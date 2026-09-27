@@ -24,9 +24,12 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from model_configs import MODEL_REGISTRY
 from models import ProsodyConformer, AudioProcessor, TextTokenizer, compute_wer, compute_cer
 
+import io
+import soundfile as sf
+
 # Check for required modules
 try:
-    from datasets import load_dataset, interleave_datasets
+    from datasets import load_dataset, interleave_datasets, Audio
     HAS_STREAMING = True
 except ImportError:
     HAS_STREAMING = False
@@ -82,7 +85,7 @@ def get_streaming_dataloader(languages, split='train', batch_size=2, max_samples
 
         for repo_id, config_name in candidate_repos:
             try:
-                split_name = 'train.clean.100' if repo_id == 'librispeech_asr' and split == 'train' else ('validation.clean' if repo_id == 'librispeech_asr' else split)
+                split_name = 'train.100' if repo_id == 'librispeech_asr' and split == 'train' else ('validation' if repo_id == 'librispeech_asr' else split)
                 ds_cand = load_dataset(
                     repo_id,
                     config_name,
@@ -90,6 +93,11 @@ def get_streaming_dataloader(languages, split='train', batch_size=2, max_samples
                     streaming=True,
                     **kwargs
                 )
+                try:
+                    ds_cand = ds_cand.cast_column("audio", Audio(decode=False))
+                except Exception:
+                    pass
+
                 if max_samples:
                     ds_cand = ds_cand.take(max_samples // len(languages))
 
@@ -120,8 +128,16 @@ def get_streaming_dataloader(languages, split='train', batch_size=2, max_samples
         try:
             for sample in combined:
                 try:
-                    audio = sample['audio']['array'] if isinstance(sample.get('audio'), dict) else sample.get('audio')
-                    if audio is None:
+                    raw_audio = sample.get('audio')
+                    if isinstance(raw_audio, dict) and 'bytes' in raw_audio and raw_audio['bytes'] is not None:
+                        audio_arr, _ = sf.read(io.BytesIO(raw_audio['bytes']))
+                        audio = audio_arr
+                    elif isinstance(raw_audio, dict) and 'array' in raw_audio and raw_audio['array'] is not None:
+                        audio = raw_audio['array']
+                    else:
+                        audio = raw_audio
+
+                    if audio is None or len(audio) == 0:
                         continue
                     text = sample.get('sentence', sample.get('raw_text', sample.get('normalized_text', sample.get('text', ''))))
                     if not text or len(str(text).strip()) == 0:
