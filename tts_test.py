@@ -38,15 +38,20 @@ def synthesize_speech(checkpoint_path: str, text: str, output_wav: str = "genera
         dummy_input = torch.randn(1, config["encoder"]["input_dim"], target_T, device=device)
 
         outputs = model(dummy_input)
-        f0_pred = outputs["f0_pred"]          # Pitch contour (Swaras)
-        energy_pred = outputs["energy_pred"]  # Dynamic intensity
+        encoder_out = outputs["encoder_out"]  # [1, T_subsampled, hidden_dim]
+        f0_pred = outputs["f0_pred"]          # [1, T_subsampled] Pitch contour (Swaras)
+        energy_pred = outputs["energy_pred"]  # [1, T_subsampled] Dynamic intensity
+
+        # Project encoder representation to mel channels [1, n_mels, T_subsampled]
+        proj = torch.nn.Linear(config["encoder"]["hidden_dim"], config["encoder"]["input_dim"]).to(device)
+        mel_pred = proj(encoder_out).transpose(1, 2)  # [1, n_mels, T_subsampled]
 
         # Invert Mel-spectrogram into audio waveform via Inverse Mel + Griffin-Lim
         inv_mel = torchaudio.transforms.InverseMelScale(n_stft=513, n_mels=config["encoder"]["input_dim"], sample_rate=16000).to(device)
         griffin_lim = torchaudio.transforms.GriffinLim(n_fft=1024, hop_length=256).to(device)
 
-        # Modulate spectral energy with pitch contour
-        modulated_mel = torch.clamp(dummy_input * (1.0 + 0.05 * f0_pred.unsqueeze(1)), min=-10.0, max=10.0)
+        # Modulate spectral energy with predicted F0 pitch contour
+        modulated_mel = torch.clamp(mel_pred * (1.0 + 0.05 * f0_pred.unsqueeze(1)), min=-10.0, max=10.0)
         spectrogram = inv_mel(torch.exp(modulated_mel))
         waveform = griffin_lim(spectrogram).cpu()
 
