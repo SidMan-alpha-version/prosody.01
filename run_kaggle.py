@@ -18,7 +18,7 @@ def main():
 
     # 1. Install dependencies
     print("📦 Installing required packages...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "accelerate", "datasets", "torchaudio", "tqdm", "-q"], check=False)
+    subprocess.run([sys.executable, "-m", "pip", "install", "accelerate", "datasets", "torchaudio", "soundfile", "librosa", "tqdm", "-q"], check=False)
 
     # 2. Extract arguments
     args = sys.argv[1:]
