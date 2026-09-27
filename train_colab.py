@@ -312,6 +312,12 @@ def main():
     for epoch in range(args.epochs):
         model.train()
         print(f"\nEpoch {epoch+1}/{args.epochs}")
+
+        if args.use_streaming:
+            train_data = get_streaming_dataloader(
+                languages, 'train', args.batch_size, args.max_samples, args.hf_token, args.max_audio_len, args.synthetic_data
+            )
+
         pbar = tqdm(train_data, desc="Training")
 
         for batch_idx, batch in enumerate(pbar):
