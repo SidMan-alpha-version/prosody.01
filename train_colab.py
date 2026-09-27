@@ -299,12 +299,33 @@ def main():
 
     # Create Prosody Conformer Model
     model = ProsodyConformer(config)
-    if args.checkpoint and os.path.exists(args.checkpoint):
+    ckpt_path = args.checkpoint
+
+    # If no local checkpoint provided or file missing, attempt to download from Hugging Face Hub automatically
+    if args.hf_token and (not ckpt_path or not os.path.exists(ckpt_path)):
+        try:
+            from huggingface_hub import HfApi, hf_hub_download
+            api = HfApi(token=args.hf_token)
+            user_info = api.whoami()
+            repo_id = f"{user_info['name']}/prosody-conformer-{args.model_size}"
+            if accelerator.is_main_process:
+                print(f"🔍 Checking Hugging Face Hub ({repo_id}) for previous model weights...")
+            downloaded_file = hf_hub_download(repo_id=repo_id, filename="model_latest.pt", token=args.hf_token)
+            ckpt_path = downloaded_file
+            if accelerator.is_main_process:
+                print(f"📥 Downloaded existing weights from Hugging Face Hub: {ckpt_path}")
+        except Exception:
+            if accelerator.is_main_process:
+                print("ℹ️ No existing checkpoint found on Hugging Face Hub. Starting fresh training run.")
+
+    if ckpt_path and os.path.exists(ckpt_path):
         if accelerator.is_main_process:
-            print(f"📦 Loading pre-trained checkpoint weights from {args.checkpoint}...")
-        ckpt = torch.load(args.checkpoint, map_location=accelerator.device)
+            print(f"📦 Loading pre-trained checkpoint weights from {ckpt_path}...")
+        ckpt = torch.load(ckpt_path, map_location=accelerator.device)
         state_dict = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
         model.load_state_dict(state_dict, strict=False)
+        if accelerator.is_main_process:
+            print("✅ Successfully restored weights into model!")
     ctc_criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 
     optimizer = AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-2)
@@ -403,14 +424,14 @@ def main():
                 "vocab_size": config.get("vocab_size", 256),
             }
 
-            # Optionally bundle HiFi-GAN weights for 100% self-contained model deployment
+            # Bundle SpeechT5 HiFi-GAN Vocoder weights for 100% self-contained model deployment
             try:
                 from transformers import SpeechT5HifiGan
                 hifigan_vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan")
                 checkpoint_payload["hifigan_state"] = hifigan_vocoder.state_dict()
-                print("✨ Bundled SpeechT5 HiFi-GAN Vocoder weights into checkpoint payload!")
-            except Exception:
-                pass
+                print("✨ Successfully bundled SpeechT5 HiFi-GAN Vocoder weights into checkpoint payload!")
+            except Exception as e:
+                print(f"⚠️ Could not bundle HiFi-GAN weights: {e}")
 
             torch.save(checkpoint_payload, latest_path)
             print(f"💾 Saved checkpoint to {latest_path}")
@@ -420,6 +441,27 @@ def main():
                 best_path = Path(args.output_dir) / "model_best.pt"
                 torch.save(checkpoint_payload, best_path)
                 print(f"🌟 New best unified model saved to {best_path}")
+
+            # Auto-upload checkpoint to HuggingFace Model Hub if hf-token is provided
+            if args.hf_token:
+                try:
+                    from huggingface_hub import HfApi
+                    api = HfApi(token=args.hf_token)
+                    user_info = api.whoami()
+                    repo_id = f"{user_info['name']}/prosody-conformer-{args.model_size}"
+                    api.create_repo(repo_id=repo_id, exist_ok=True, repo_type="model")
+                    
+                    target_upload = best_path if (eval_results and best_path.exists()) else latest_path
+                    print(f"☁️ Auto-uploading bundled model checkpoint to HuggingFace Hub ({repo_id})...")
+                    api.upload_file(
+                        path_or_fileobj=str(target_upload),
+                        path_in_repo="model_latest.pt",
+                        repo_id=repo_id,
+                        repo_type="model",
+                    )
+                    print(f"✅ Successfully uploaded checkpoint with HiFi-GAN weights to https://huggingface.co/{repo_id}")
+                except Exception as upload_err:
+                    print(f"⚠️ Hugging Face Hub upload failed: {upload_err}")
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
