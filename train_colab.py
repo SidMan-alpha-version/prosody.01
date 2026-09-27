@@ -384,17 +384,19 @@ def main():
 
                     # Backward pass
                     accelerator.backward(loss)
+                    accelerator.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
                     optimizer.zero_grad()
-                    scheduler.step()
 
                     total_loss += loss.item()
                     step += 1
 
                     if (batch_idx + 1) % 5 == 0:
-                        avg_loss = total_loss / max(1, step)
+                        # Display recent 100-step smoothed loss instead of lifetime average
+                        window_loss = loss.item() if step <= 1 else (0.95 * avg_loss + 0.05 * loss.item()) if 'avg_loss' in locals() else loss.item()
+                        avg_loss = window_loss
                         mem_str = f"{torch.cuda.max_memory_allocated()/1e9:.1f}GB" if torch.cuda.is_available() else "CPU"
-                        pbar.set_postfix({"loss": f"{avg_loss:.4f}", "vram": mem_str})
+                        pbar.set_postfix({"recent_loss": f"{avg_loss:.4f}", "vram": mem_str})
 
             except Exception as e:
                 print(f"❌ Error in training step: {e}")
