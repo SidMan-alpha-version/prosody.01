@@ -115,18 +115,66 @@ class ConformerBlock(nn.Module):
         return x
 
 
+class Conv2dSubsampling(nn.Module):
+    """
+    2D Convolutional Subsampling block (4x time downsampling, 4x frequency downsampling).
+    Input shape: [B, n_mels, T]
+    Output shape: [B, T//4, hidden_dim]
+    """
+    def __init__(self, in_channels: int = 1, n_mels: int = 80, hidden_dim: int = 768, dropout: float = 0.1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, hidden_dim, kernel_size=3, stride=2, padding=1)
+        self.conv2 = nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, stride=2, padding=1)
+        out_freq_dim = n_mels // 4
+        self.out_proj = nn.Linear(hidden_dim * out_freq_dim, hidden_dim)
+        self.act = Swish()
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, mel_features):
+        """
+        mel_features: [B, n_mels, T]
+        """
+        x = mel_features.transpose(1, 2).unsqueeze(1)  # [B, 1, T, n_mels]
+        x = self.act(self.conv1(x))                    # [B, hidden_dim, T/2, n_mels/2]
+        x = self.act(self.conv2(x))                    # [B, hidden_dim, T/4, n_mels/4]
+        b, c, t, f = x.shape
+        x = x.transpose(1, 2).contiguous().view(b, t, c * f)  # [B, T/4, hidden_dim * (n_mels/4)]
+        x = self.out_proj(x)                          # [B, T/4, hidden_dim]
+        x = self.dropout(x)
+        return x
+
+
 class ConformerEncoder(nn.Module):
     """Stacked Conformer Encoder with subsampling / input projection."""
 
-    def __init__(self, input_dim: int = 80, hidden_dim: int = 768, num_layers: int = 18, num_heads: int = 12, ffn_dim: int = 3072, conv_kernel_size: int = 31, dropout: float = 0.1, gradient_checkpointing: bool = False):
+    def __init__(
+        self,
+        input_dim: int = 80,
+        hidden_dim: int = 768,
+        num_layers: int = 18,
+        num_heads: int = 12,
+        ffn_dim: int = 3072,
+        conv_kernel_size: int = 31,
+        dropout: float = 0.1,
+        gradient_checkpointing: bool = False,
+        use_subsampling: bool = True,
+    ):
         super().__init__()
         self.gradient_checkpointing = gradient_checkpointing
-        self.input_projection = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            Swish(),
-            nn.Dropout(dropout),
-        )
+        self.use_subsampling = use_subsampling
+
+        if use_subsampling:
+            self.subsampling = Conv2dSubsampling(
+                in_channels=1, n_mels=input_dim, hidden_dim=hidden_dim, dropout=dropout
+            )
+        else:
+            self.input_projection = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                Swish(),
+                nn.Dropout(dropout),
+            )
+
         self.layers = nn.ModuleList([
             ConformerBlock(hidden_dim, num_heads, ffn_dim, conv_kernel_size, dropout)
             for _ in range(num_layers)
@@ -135,10 +183,14 @@ class ConformerEncoder(nn.Module):
     def forward(self, mel_features):
         """
         Input: [B, n_mels, T]
-        Output: [B, T, hidden_dim]
+        Output: [B, T_subsampled, hidden_dim]
         """
-        x = mel_features.transpose(1, 2)  # [B, T, n_mels]
-        x = self.input_projection(x)       # [B, T, hidden_dim]
+        if self.use_subsampling:
+            x = self.subsampling(mel_features)
+        else:
+            x = mel_features.transpose(1, 2)  # [B, T, n_mels]
+            x = self.input_projection(x)       # [B, T, hidden_dim]
+
         for layer in self.layers:
             if self.gradient_checkpointing and self.training:
                 x = torch.utils.checkpoint.checkpoint(layer, x, use_reentrant=False)
@@ -160,6 +212,7 @@ class ProsodyConformer(nn.Module):
         enc_cfg = config["encoder"]
         self.vocab_size = config.get("vocab_size", 256)
         grad_chk = config.get("gradient_checkpointing", False)
+        use_sub = config.get("subsampling", True)
 
         self.encoder = ConformerEncoder(
             input_dim=enc_cfg.get("input_dim", 80),
@@ -170,6 +223,7 @@ class ProsodyConformer(nn.Module):
             conv_kernel_size=enc_cfg.get("conv_kernel_size", 31),
             dropout=enc_cfg.get("dropout", 0.1),
             gradient_checkpointing=grad_chk,
+            use_subsampling=use_sub,
         )
 
         hidden_dim = enc_cfg.get("hidden_dim", 768)
